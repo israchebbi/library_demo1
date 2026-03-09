@@ -10,6 +10,8 @@ class User {
     public $email;
     public $password;
     public $role;
+    public $created_at;
+    public $updates_at;
 
     /**
      * Constructor to initialize a User object with provided data.

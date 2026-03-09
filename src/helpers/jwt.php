@@ -1,14 +1,15 @@
 <?php
+require_once __DIR__ . '/../../vendor/autoload.php';
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 //secret key used to sign tokens 
-$secret_key ="library_secret_key_123";
-//create jwt token 
+$secret_key = 'your_very_long_and_secure_secret_key_here_minimum_32_characters_long';//create jwt token 
 function createJWT($user){
     global $secret_key;
     //token pplayload (data inside token)
     $playload = [
-        "iss" => "library-api",
+        "iss" => "localhost",
+        "aud" => 'library_users',
         "iat" => time(),
         "exp" => time()+3600,
         "data"=> [
