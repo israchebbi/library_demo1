@@ -5,108 +5,71 @@
  * It uses JWT for authentication and role-based access control.
  */
 
+// Buffer ALL output so no stray whitespace/warnings leak before our JSON
+ob_start();
+
 // Set response header to JSON
 header("Content-Type: application/json");
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
+header("Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS");
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    ob_clean();
+    http_response_code(200);
+    exit;
+}
 
 // Load required libraries and configuration
+require_once __DIR__ . '/../controllers/BorrowingController.php';
 require_once __DIR__ . '/../vendor/autoload.php'; // Composer autoloader for dependencies
 require_once __DIR__ . '/../src/config/database.php'; // Database connection
 require_once __DIR__ . '/../src/helpers/jwt.php'; // JWT helper functions
-require_once __DIR__ .'../controllers/AuthController.php'; // Auth controller for login
+require_once __DIR__ . '/../controllers/AuthController.php'; // Auth controller for login
 require_once __DIR__ . '/../controllers/BooksController.php'; // Books controller for book management(router)
+
 // Get HTTP method and request path
 $method = $_SERVER['REQUEST_METHOD']; // e.g., POST, GET
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH); // e.g., /login, /profile
 
+// REMOVE PROJECT FOLDER FROM PATH (IMPORTANT)
+$path = str_replace('/backend_project/public', '', $path);
+
 //////////////////////////////////////////////////
 // LOGIN ROUTE (PUBLIC - NO TOKEN REQUIRED)
 //////////////////////////////////////////////////
+if ($path === '/register' && $method === 'POST'){
+    AuthController::register();
+    exit;
+}
+
 if ($method === 'POST' && $path === '/login') {
-    // Read JSON data from request body
-    $data = json_decode(file_get_contents("php://input"), true);
-
-    // Validate required fields
-    if (empty($data['email']) || empty($data['password'])) {
-        echo json_encode([
-            "status" => "error",
-            "message" => "email and password required"
-        ]);
-        exit;
-    }
-
-    $email = $data['email'];
-    $password = $data['password'];
-
-    // Establish database connection
-    $pdo = Database::connect(); // Fixed: Use Database::connect() instead of undefined $pdo
-
-    // Prepare and execute query to find user by email
-    $stmt = $pdo->prepare("SELECT * FROM users WHERE email = :email");
-    $stmt->execute([':email' => $email]);
-
-    // Fetch user data
-    $user = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    // Check if user exists
-    if (!$user) {
-        echo json_encode([
-            "status" => "error",
-            "message" => "invalid credentials"
-        ]);
-        exit;
-    }
-
-    // Verify password
-    if (!password_verify($password, $user['password'])) {
-        echo json_encode([
-            "status" => "error",
-            "message" => "invalid credentials"
-        ]);
-        exit;
-    }
-
-    // Generate JWT token
-    $token = createJWT($user);
-
-    // Return success response with token
-    echo json_encode([
-        "status" => "success",
-        "token" => $token,
-        "role" => $user['role']
-    ]);
+    AuthController::login();
     exit;
 }
 
 //////////////////////////////////////////////////
 // HELPER FUNCTION: EXTRACT TOKEN FROM HEADER
 //////////////////////////////////////////////////
-/**
- * Extract Bearer token from Authorization header.
- * @return string|null Token string or null if not found
- */
+
 function getBearerToken() {
     $headers = getallheaders();
-
-    if (!isset($headers['Authorization'])) {
-        return null;
-    }
-
-    return str_replace('Bearer ', '', $headers['Authorization']);
+    return $headers['Authorization'] ?? null;
 }
 
-//////////////////////////////////////////////////
-// PROTECTED ROUTES (TOKEN REQUIRED)
-//////////////////////////////////////////////////
-// Get token from request header
-$token = getBearerToken();
-
-if (!$token) {
+//AUTH CHECK
+$authHeader = getBearerToken();
+if (!$authHeader || !str_starts_with($authHeader, 'Bearer ')){
+    ob_clean();
     echo json_encode([
         "status" => "error",
         "message" => "token missing"
     ]);
     exit;
 }
+
+// Get token from request header
+$token = str_replace("Bearer ", "", $authHeader);
 
 try {
     // Verify and decode JWT token
@@ -117,6 +80,7 @@ try {
     $userRole = $decoded->data->role;
 
 } catch (Exception $e) {
+    ob_clean();
     echo json_encode([
         "status" => "error",
         "message" => "invalid token"
@@ -125,9 +89,12 @@ try {
 }
 
 //////////////////////////////////////////////////
-// PROTECTED PROFILE ROUTE
+// PROTECTED ROUTES
 //////////////////////////////////////////////////
+
+//profile
 if ($method === 'GET' && $path === '/profile') {
+    ob_clean();
     echo json_encode([
         "status" => "success",
         "message" => "access granted",
@@ -136,122 +103,99 @@ if ($method === 'GET' && $path === '/profile') {
     exit;
 }
 
+//search books route — must be BEFORE GET /books to avoid being shadowed
+if ($method === 'GET' &&  $path === '/books/search'){
+    ob_clean();
+    BooksController::search();
+    exit;
+}
 
 //GET all books (student and librarian)
 if ($method === 'GET' && $path === '/books'){
-    $pdo = Database::connect();
-
-    $stmt = $pdo->query("SELECT * FROM books");
-    $books = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    echo json_encode([
-        "status" => "success",
-        "data" => $books
-    ]);
+    ob_clean();
+    BooksController::index($userRole);
     exit;
 }
-///ADD book (librarian only)
-if ($method ==='POST' && $path ==='/books'){
 
-    if($userRole !== 'librarian'){
-        echo json_encode([
-            "status" => "error",
-            "message" => "access denied"
-        ]);
-        exit;
-    }
-
-    $data = json_decode(file_get_contents("php://input"),true);
-
-    if(empty($data['title']) || empty($data['author'])){
-        echo json_encode([
-            "status" => "error",
-            "message" => "title and author required"
-        ]);
-        exit;
-    }
-
-    $pdo = Database::connect();
-    $stmt =$pdo->prepare("INSERT INTO books (title, author) VALUES (:title, :author)");
-    $stmt->execute([
-        ':title' => $data['title'],
-        ':author' => $data['author']
-    ]);
-    echo json_encode([
-        "status" => "success",
-        "message" => "books added successfuly"
-    ]);
+//ADD book (librarian only)
+if ($method === 'POST' && $path === '/books'){
+    ob_clean();
+    BooksController::store($userRole);
     exit;
 }
-//UPDATE vookk (librarian only)
 
-if ($method === 'PUT' && $path=== '/books'){
-    if ($userRole !== 'librarian'){
-        echo json_encode([
-            "status" => "error",
-            "message" => "access denied"
-        ]);
-        exit;
-}
-$data = json_decode(file_get_contents("php://input"), true);
-if (empty($data['id'])|| empty($data['title']) || empty($data['author'])){
-    echo json_encode ([
-        "status" => "error",
-        "message"=> "id, title and author required"
-    ]);
-    exit;
-}
-$pdo=Database::connect();
-$stmt = $pdo->prepare(
-    "UPDATE books SET title = :title, author = :author WHERE id =:id"
-);
-$stmt->execute([
-    ':id' => $data['id'],
-    ':title' => $data['title'],
-    ':author' => $data['author']
-]);
-echo json_encode ([
-    "status" => "success",
-    "message" => "books update successfully"
-]);
-exit;
-}
-///DELETE book (librarian only)
-if ($method === 'DELETE' && $path =='/books'){
-    if ($userRole !== 'librarian'){
-        echo json_encode([
-            "status" => "error",
-            "message" => "access denied"            
-        ]);
-        exit;
-    }
-    $data =json_decode(file_get_contents("php://input"), true);
-
-    if (empty($data['id'])){
-        echo json_encode([
-            "status" => "error",
-            "message" => "id required"
-        ]);
-        exit;
-    }
-    $pdo =Database::connect();
-    $stmt =$pdo->prepare("DELETE FROM books WHERE id = :id");
-    $stmt->execute([':id'=> $data['id']]);
-    echo json_encode ([
-        "status" => "success",
-        "message" => "book deleted successfully"
-    ]);
+//UPDATE book (librarian only)
+if ($method === 'PUT' && $path === '/books'){
+    ob_clean();
+    BooksController::update($userRole);
     exit;
 }
 
 
+//ADD COPIES to a book (admin only)
+if ($method === 'PATCH' && $path === '/books/copies'){
+    ob_clean();
+    BooksController::addCopies($userRole);
+    exit;
+}
 
+//DELETE book (librarian only)
+if ($method === 'DELETE' && preg_match('#^/books/(\d+)$#', $path, $matches)){
+    ob_clean();
+    BooksController::delete($matches[1], $userRole);
+    exit;
+}
 
+//BORROWING - borrow a book
+if ($method === 'POST' && $path === '/borrow'){
+    ob_clean();
+    BorrowingController::borrow($userId, $userRole);
+    exit;
+}
 
+//BORROWING - return a book
+if ($method === 'POST' && $path === '/return'){
+    ob_clean();
+    BorrowingController::returnBook($userId, $userRole);
+    exit;
+}
 
+//student view his own borrowings
+if ($method === 'GET' && $path === '/myBorrowings') {
+    ob_clean();
+    BorrowingController::myBorrowings($userId);
+    exit;
+}
+
+//VIEW BORROWINGS (librarian only)
+if ($method === 'GET' && $path === '/borrowings'){
+    ob_clean();
+    BorrowingController::index($userRole);
+    exit;
+}
+
+//ADMIN LOANS - view all loans
+if ($method === 'GET' && $path === '/adminLoans'){
+    ob_clean();
+    BorrowingController::adminLoans();
+    exit;
+}
+//get overdue loans (admin only)
+if ($method === 'GET' && $path === '/overdueLoans'){
+    ob_clean();
+    BorrowingController::overdueLoans();
+    exit;
+}
+//profile route
+if ($method === 'GET' && $path === '/profile') {
+    ob_clean();
+    AuthController::profile($userId);
+    exit;
+}
 
 
 // If no route matches, return 404
+ob_clean();
 http_response_code(404);
 echo json_encode([
     "status" => "error",
